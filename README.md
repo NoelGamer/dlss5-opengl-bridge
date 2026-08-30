@@ -10,44 +10,6 @@ verbatim.
 [dx11]: https://github.com/NIGos/dlss5-dx11-bridge
 [vk]: https://github.com/AlanBacker/dlss5-vk-bridge
 
-> **Status: young.** Everything below the OpenGL edge is the DX11 bridge's proven
-> code; everything at that edge is new. 1.0.0 crashed MX Bikes on launch — see
-> [Why the add-on pins itself](#why-the-add-on-pins-itself) — and 1.0.1 fixes
-> that, but no title has yet been confirmed bridging end to end. Logs from anyone
-> who tries it are the most useful thing you can send.
-
-## Version history
-
-**1.0.3** — two fixes found on the first title to bridge end to end.
-`GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE` was written as `0x8213`, which is
-`GREEN_SIZE`: it answers zero on a depth attachment, so the default framebuffer
-reported no depth and DLSS ran blind on every game whose scene target is the back
-buffer. And the fixed-function matrix hook is now opt-in (`mv = 1`) instead of
-part of `mv = auto` — it rewrites the first bytes of `glDrawArrays`,
-`glDrawElements` and `glBegin` once a frame, which is safe only while the game
-draws from a single thread, and MX Bikes crashed on loading a track. It also
-retires itself after 300 frames of finding nothing.
-
-**1.0.2** — finds the NGX dispatcher. `_nvngx.dll` lives in the driver store,
-which is on nobody's DLL search path, so 1.0.1's bare `LoadLibrary` could not
-reach it and every session ended in "no module carries the complete NGX D3D12
-export set". It is now located the way NVIDIA's own loader does it, through
-`HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore` → `FullPath`, with a
-driver-store search by pattern as a fallback. This is a problem only an OpenGL
-bridge has: the DX11 and Vulkan bridges are woken up by the game's own NGX call,
-so the dispatcher is already in the process by the time they look for it.
-
-**1.0.1** — the add-on pins itself in memory before installing anything. ReShade
-loads and unloads add-ons several times during startup, and 1.0.0 left a running
-thread and a set of handed-out function pointers inside a module that was then
-unmapped, which crashed the game a few seconds after launch. Also: with the
-default settings `wglGetProcAddress` is no longer hooked at all, the first-draw
-hook is not armed until the GL context has been identified, `mode = 3` now
-installs no hooks whatsoever, and the swap forward no longer holds a lock across
-ReShade's whole present.
-
-**1.0.0** — first build.
-
 ## Read this first: OpenGL is not the same problem
 
 The DX11 and Vulkan bridges work by **mirroring**. The game already drives DLSS
@@ -85,34 +47,6 @@ on D3D11 or D3D12 through interop — and the [DX11 bridge][dx11] already handle
 it, because it hooks every module exporting the NGX D3D11 API regardless of what
 the host game renders with. Use that one instead. This bridge is for the ordinary
 case: an OpenGL game with no DLSS at all.
-
-## Try DLSS5-Feeder first
-
-[**DLSS5-Feeder**](https://github.com/jlrouzies-fr/DLSS5-Feeder) solves the same
-problem this bridge does, and it got there first. It also builds a synthetic DLAA
-contract for a game with no DLSS, but it assembles it out of ReShade's own
-resources: the back buffer ReShade is already processing, depth from ReShade's
-Generic Depth add-on, and motion vectors from an established optical-flow shader
-(LumeniteFX, iMMERSE Launchpad, VORT or qUINT).
-
-It is the more mature project, and its motion vectors are better than this
-bridge's in the case that matters most:
-
-| | DLSS5-Feeder | this bridge |
-| --- | --- | --- |
-| motion vectors | optical flow, estimated from the image — sees **things that move on their own** | camera reprojection from real depth and real matrices — exact for the world, blind to moving objects |
-| depth | ReShade Generic Depth | read straight out of the game's framebuffer |
-| APIs | D3D11, D3D12, Vulkan (+ D3D9 via dgVoodoo2, 32-bit via a helper) | **OpenGL** |
-| needs | a `.fx` and an optical-flow provider installed and enabled | nothing but itself |
-
-**OpenGL is not on its list**, which is the reason this bridge exists. But its
-add-on does initialise on ReShade's OpenGL runtime, so if you can get
-`DLSS5_Feed.fx` and a motion-vector provider compiling there, it is the better
-tool and you should use it instead.
-
-**Do not run both at once.** Each opens its own private D3D12 NGX session and
-drives the same `NVSDK_NGX_D3D12_EvaluateFeature`; the DLSS 5 add-on would be fed
-two unrelated feature streams. Pick one and take the other out of the folder.
 
 ## What it does
 
