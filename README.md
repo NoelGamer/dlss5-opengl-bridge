@@ -16,38 +16,10 @@ In the game folder, alongside the game executable:
 
 | File | Where from |
 | --- | --- |
-| `opengl32.dll` — ReShade 6.8+ **with add-on support**, installed for **OpenGL** | reshade.me, full version |
-| a DLSS 5 Neural Rendering ReShade add-on | its own author |
-| `nvngx_dlssnr.dll` | shipped with that add-on |
-| `dlss5-opengl-bridge.addon64` | this package |
-
-The DLSS 5 add-on's own neural-rendering toggle has to be enabled, either in its
-ReShade overlay panel or in `ReShade.ini`.
-
-**It has to be the OpenGL ReShade, not a DirectX one.** ReShade is installed as
-whichever DLL the game's graphics API loads: `opengl32.dll` for OpenGL,
-`dxgi.dll` or `d3d11.dll` for Direct3D. An OpenGL game never loads the DirectX
-one, so a DirectX install does nothing at all — no ReShade, no add-ons, no
-bridge. Pick OpenGL in the ReShade installer and check that
-`opengl32.dll` ends up next to the game executable. `ReShade.log` confirms it:
-
-```
-Initializing crosire's ReShade version '6.8.0.…' loaded from 'C:\…\OPENGL32.dll'
-```
-
-The private D3D12 device the bridge creates is internal to the bridge and needs
-no ReShade of its own.
-
-The bridge itself needs an NVIDIA RTX GPU with a DLSS-capable driver, and an
-OpenGL **3.3 or newer** context that offers `GL_EXT_memory_object_win32` and
-`GL_EXT_semaphore_win32`. Every NVIDIA driver that can run DLSS offers those, so
-if they are missing the context is not on the NVIDIA GPU — on a laptop that means
-the game is rendering on the integrated part, and the fix is in the NVIDIA
-Control Panel.
-
-Unlike the other two bridges, nothing in an OpenGL process loads NGX on its own,
-so the bridge asks for `_nvngx.dll` by name when it opens its D3D12 session. The
-driver puts it on the DLL search path; if it will not load, the log says so.
+| `opengl32.dll` — ReShade 6.8+ **with add-on support**, installed for **OpenGL** | [ReShade](https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe) |
+| `renodx-dlss5.addon64` | [RenoDX](https://discord.com/invite/renodx) |
+| `nvngx_dlssnr.dll` | [RenoDX](https://discord.com/invite/renodx) |
+| `dlss5-opengl-bridge.addon64` | [Release](https://github.com/NoelGamer/dlss5-opengl-bridge/releases/download/v1.0.5/dlss5-opengl-bridge.addon64) |
 
 ## Install
 
