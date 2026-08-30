@@ -10,123 +10,6 @@ verbatim.
 [dx11]: https://github.com/NIGos/dlss5-dx11-bridge
 [vk]: https://github.com/AlanBacker/dlss5-vk-bridge
 
-## Read this first: OpenGL is not the same problem
-
-The DX11 and Vulkan bridges work by **mirroring**. The game already drives DLSS
-through NGX on its own API, so those bridges intercept the game's own
-`EvaluateFeature`, forward it untouched, and reproduce the same contract on a
-private D3D12 NGX session — the call the DLSS 5 add-on detours. Every size,
-format and scalar is read out of the parameter block the game passed.
-
-**None of that is possible in OpenGL, because NGX has no OpenGL API.** NVIDIA
-ships NGX for D3D11, D3D12 and Vulkan and never shipped an OpenGL interface. An
-OpenGL game has therefore never made an NGX call of any kind, there is no
-`NVSDK_NGX_OPENGL_EvaluateFeature` to hook, and there is no parameter block to
-read.
-
-So this bridge does not mirror a contract. It **builds** one:
-
-| | DX11 / Vulkan bridges | this bridge |
-| --- | --- | --- |
-| Color | the game's texture, from the parameter block | the scene target, found in the GL frame |
-| Depth | the game's texture | that target's depth, converted to `R32_FLOAT` |
-| MotionVectors | the game's texture | **reprojected** from depth and the frame-to-frame view-projection |
-| Jitter | mirrored from the game | **zero** — the game does not jitter |
-| create flags | copied from the game | stated outright, from buffers this bridge made |
-| geometry | whatever the game asked for | **1:1 — DLAA**, always |
-
-The DX11 bridge's own source anticipates this exactly, in a note left for
-whoever adds a second source of contract: a synthetic contract *"is a legitimate
-second source, but it has to arrive already complete: every key set explicitly by
-whatever builds it."* That is the rule this bridge follows. Nothing here is left
-unset in the hope that NGX has a sensible default, because an unset parameter is
-only ever right when a real caller left it unset on purpose.
-
-**If your OpenGL game already has DLSS through a mod**, that mod is reaching NGX
-on D3D11 or D3D12 through interop — and the [DX11 bridge][dx11] already handles
-it, because it hooks every module exporting the NGX D3D11 API regardless of what
-the host game renders with. Use that one instead. This bridge is for the ordinary
-case: an OpenGL game with no DLSS at all.
-
-## What it does
-
-Per frame, all of it inline on the game's GL context, at the moment the scene is
-finished and nothing has read it yet:
-
-```
- blit  scene colour ------------------------------> shared Color   (RGBA16F)
- blit  scene depth  --> depth copy
- draw  depth copy + reprojection ------------------> shared Depth   (R32F)
-                                              and -> shared MV      (RG16F)
- glSignalSemaphoreEXT(sem_in, v)  +  glFlush
-        │
-        │   D3D12 queue:  Wait(fence_in, v)
-        │                 NVSDK_NGX_D3D12_EvaluateFeature   ◀── the DLSS 5
-        │                 Signal(fence_out, v)                  add-on inserts
-        │                                                       its pass here
- glWaitSemaphoreEXT(sem_out, v)
- blit  shared Output ------------------------------> scene colour
-```
-
-The shared textures are created on the D3D12 side (`HEAP_FLAG_SHARED` +
-`ALLOW_SIMULTANEOUS_ACCESS`) and imported into OpenGL as texture objects backed
-by `GL_EXT_memory_object_win32` memory objects. The two shared D3D12 fences are
-imported as `GL_EXT_semaphore_win32` semaphores. The private D3D12 device is
-chosen by **LUID** so it lands on the same physical GPU as the GL context —
-cross-API shared handles require it.
-
-OpenGL has one implicit command stream per context, like D3D11's immediate
-context and unlike Vulkan, so the signal and the wait are ordinary calls placed
-inline. None of the Vulkan port's worker thread, `VkEvent` sandwich or
-submit-granularity handoff is needed here.
-
-The DLSS 5 add-on is not modified or patched. It simply starts receiving the
-D3D12 evaluate it was always waiting for.
-
-## The three things you should know before installing
-
-**1. It runs as DLAA, not as an upscaler.** There is no generic way to make an
-OpenGL game render smaller than its window — the default framebuffer *is* the
-window, and an offscreen scene target is composited at its own size. So the
-bridge always runs 1:1. That is the right operating point anyway: the purpose is
-to give a neural-rendering add-on a D3D12 evaluate to attach to, and DLAA at
-native resolution is exactly what such an add-on wants. It is not going to give
-you frames back.
-
-**2. There is no jitter.** DLSS reconstructs sub-pixel detail from a projection
-matrix the game offsets slightly every frame. A game with no temporal pass of its
-own does not do that, and this bridge does not modify the game's projection to
-make it. `Jitter.Offset` is therefore reported as zero, truthfully — declaring a
-jitter that was never applied would tell DLSS to undo a shift that is not in the
-image, which is worse than declaring none. DLSS still runs and still resolves;
-it has less to work with than it would in a game that integrated it properly.
-
-**3. Motion vectors are reprojected, not measured.** Given depth and the
-view-projection of this frame and the last, every pixel can be put back where it
-was. That is exact for everything that did not move on its own — which is the
-camera motion DLSS most needs to follow — and wrong for anything that did. A
-moving character reprojects as though it had stood still, and DLSS resolves it as
-if the camera had moved past it. Expect that to show on fast-moving objects
-against a static background.
-
-Getting the matrices at all needs one of:
-
-* **`mv_vp`**, or **`mv_view`** + **`mv_proj`** — the names of the game's matrix
-  uniforms. Exact, and by far the best answer for anything shader-based. You have
-  to find the names in the game's shader source or its shader mod.
-* **the fixed-function matrix stack** (`mv = 1`) — read at the frame's first
-  draw. Correct when the first thing drawn is world geometry submitted with the
-  camera matrix alone, which is what a fixed-function engine does and no
-  shader-based one does. **Opt-in, and not safe everywhere:** catching the first
-  draw means rewriting the first bytes of `glDrawArrays`, `glDrawElements` and
-  `glBegin` once a frame, and a game that issues GL calls from a second thread
-  will eventually be inside one of them when that happens. MX Bikes crashed on a
-  loading screen this way. Use it only on an old single-threaded engine, and set
-  `mv = 0` at the first sign of trouble. It retires itself after 300 frames if it
-  is finding nothing.
-* **nothing** — `mv = 3`. Zero motion vectors: a stable picture that smears when
-  the camera moves. Worse in motion, never wrong.
-
 ## Requirements
 
 In the game folder, alongside the game executable:
@@ -199,17 +82,6 @@ trigger a rebuild automatically.
 | `reset_every` | 0 | `1` discards temporal history every frame. Diagnostic only. |
 | `verbose` | 0 | Extra per-frame logging. |
 
-### The four settings that need a restart
-
-`source` and the three `mv_*` names are read once, when the add-on loads. They
-decide whether `wglGetProcAddress` is hooked, and a game resolves its OpenGL
-entry points during startup — a wrapper handed out after that would never be
-called. Everything else in the file is live.
-
-With the defaults (`source = 0`, no matrix uniform named) `wglGetProcAddress` is
-**not hooked at all**, and the add-on hands the game nothing. That is the
-smallest possible footprint and the state to start from.
-
 ### Which `source` to use
 
 `source = 0` is the default because it always works. Its cost is that the
@@ -223,24 +95,6 @@ finds the scene target and bridges it at the moment the game binds the default
 framebuffer to composite, which is before anything reads the result. If it picks
 the wrong framebuffer the log lists every candidate with its size and format, and
 `source = n` names one directly.
-
-## Log
-
-`dlss5-opengl-bridge.log` is written next to the add-on and records the OpenGL
-context and driver, the extensions and entry points that were and were not found,
-which `opengl32.dll` the process is actually using, the scene target that was
-picked and why, where the view-projection is coming from, the result of every NGX
-call, whether anything has detoured the D3D12 evaluate, and a timing line every
-600 frames.
-
-Two lines in it answer most questions on their own:
-
-* **`D3D12 EvaluateFeature entry (...): -- not detoured`** means no DLSS 5 add-on
-  has attached. The bridge is then running plain driver DLAA with nothing riding
-  on it, which is not what you installed it for. Check that the add-on and
-  `nvngx_dlssnr.dll` are in the folder and that its neural toggle is on.
-* **`no view-projection matrix could be found`** means motion vectors are zero.
-  See the `mv_*` settings above.
 
 ## Building
 
@@ -269,73 +123,8 @@ The version lives in two places that have to stay in step: `BRIDGE_VERSION` in
 the `.cpp`, which is what the log prints, and the numbers in `version.rc`, which
 is what ReShade's overlay shows.
 
-## How it hooks
-
-Two techniques, chosen per function by how often it is called.
-
-**Patched entry points** — `wglSwapBuffers`, `SwapBuffers`, `wglGetProcAddress`,
-and (only in a compatibility context, only when the fixed-function matrix stack
-is wanted) `glDrawArrays`, `glDrawElements` and `glBegin`. A 14-byte absolute
-jump, with the original bytes restored around every forwarded call: the same
-technique both other bridges use on the NGX exports. The draw entry points would
-be ruinous to patch this way — a busy frame calls them thousands of times — so
-that hook **takes itself back out on its first call** and is re-armed once per
-frame. Its cost is two patch operations and one forwarded call per frame,
-whatever the game's draw count.
-
-**Wrapped through `wglGetProcAddress`** — `glBindFramebuffer`, `glUseProgram`,
-`glUniformMatrix4fv`, `glGetUniformLocation`. Everything above OpenGL 1.1 reaches
-a game through `wglGetProcAddress`, so the game is simply handed a wrapper that
-calls the driver's function. One indirect call of overhead, and no patching at
-all, which is what makes it affordable on `glUniformMatrix4fv`.
-
-Nothing the bridge itself calls goes through those wrappers: it resolves its own
-entry points against the unpatched `wglGetProcAddress`, so the framebuffer
-tracker never sees the bridge's own binds and the matrix watcher never mistakes
-the bridge's program for the game's.
-
-The host executable is never patched.
-
-### Why the add-on pins itself
-
-ReShade does not load an add-on once. It builds and tears down its add-on list
-around every runtime it creates, and a game that makes a dummy OpenGL context
-before its real one produces several full load/unload cycles before rendering
-starts — four of them in MX Bikes, inside two seconds. `ReShade.log` shows them
-plainly:
-
-```
-Loading add-on from '...' ...  Registered add-on "..."
-Unloading add-on "..." ...     Unregistered add-on "..."      ← FreeLibrary
-Loading add-on from '...' ...  Registered add-on "..."
-```
-
-An add-on that only listens to events survives that. One that installs hooks does
-not, and version 1.0.0 did not: its watch thread was sleeping inside the module
-when `FreeLibrary` unmapped it, and the wrappers it had handed the game pointed
-into the same hole. Both are access violations in the game's own call stack,
-where this add-on's exception handler cannot see them, a few seconds after
-launch — which is exactly what it looked like.
-
-So the module raises its own reference count with
-`GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, …)` before it installs
-anything. `FreeLibrary` can then never unmap it, and every patch, thread and
-handed-out pointer stays valid for the life of the process.
-
-The cost is that ReShade's later reload finds a module whose `DllMain` does not
-run again, so the add-on stops appearing in ReShade's registered add-on list
-after the first cycle. Nothing here depends on being registered — no ReShade
-event is subscribed to and the hooks are already in — so the log is the place to
-confirm it is alive, not the overlay.
-
 ## Known limits
 
-- **No title confirmed working end to end yet.** The D3D12/NGX half is proven
-  code from the DX11 bridge; the OpenGL edge is new, and 1.0.0's first contact
-  with a real game found a crash rather than a picture.
-- **The add-on stops appearing in ReShade's add-on list** after ReShade's first
-  reload cycle, because it pins itself. That is expected; the log is where to
-  check that it is alive.
 - **DLAA only.** See above — there is no generic way to make an OpenGL game
   render smaller.
 - **No jitter**, so DLSS has less sub-pixel information than it would in a game
@@ -350,7 +139,6 @@ confirm it is alive, not the overlay.
   a multiple-render-target scene target is safe; per-buffer *colour masks* are
   not saved, which would matter only to a game using indexed colour masks across
   a frame boundary.
-- **Single GPU only.** Shared handles require one physical device.
 
 If anything goes wrong the bridge disables itself and the game renders on its
 own; it never leaves a broken frame on screen deliberately.
