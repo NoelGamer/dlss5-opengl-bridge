@@ -1,0 +1,12 @@
+build/
+out/
+*.obj
+*.res
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.addon64
+*.dll
+*.log
+*.cfg
